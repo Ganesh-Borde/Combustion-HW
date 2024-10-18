@@ -1,0 +1,185 @@
+"""
+Adiabatic flame temperature and equilibrium composition for a fuel/air mixture
+as a function of equivalence ratio, including formation of solid carbon.
+Altered for Homework problem 1 of 
+"""
+
+import cantera as ct
+import numpy as np
+import sys
+import csv
+import matplotlib.pyplot as plt
+##############################################################################
+# Edit these parameters to change the initial temperature, the pressure, and
+# the phases in the mixture.
+
+T = 298.15
+P = 101325.0
+
+# phases
+gas = ct.Solution('gri30.yaml')
+carbon = ct.Solution('graphite.yaml')
+
+# the phases that will be included in the calculation, and their initial moles
+mix_phases = [(gas, 1.0), (carbon, 0.0)]
+
+# gaseous fuel species create a list of fuels to test
+fuel_species = ['H2', 'CO', 'CH4', 'CH2O', 'CH3OH', 'C2H2', 'C2H4', 'C2H6', 'C3H8', 'CO:12.0, H2:6.0, CO2:1.0, CH4:1.0']
+fuel_names = ['H2 Hydrogen','CO Carbon Monoxide', 'CH4 Methane', 'CH2O Formaldehyde', 'CH3OH Methanol', 'C2H2 Acetylene', 'C2H4 Ethylene', 'C2H6 Ethane', 'C3H8 Propane', 'Syngas']
+l = len(fuel_species)
+# equivalence ratio range
+npoints = 20
+phi = np.linspace(0.1, 2.0, npoints)
+
+##############################################################################
+# creates the mixture upon which the tests will be performed
+mix = ct.Mixture(mix_phases)
+
+#   create some matrices to hold the data 
+tad = np.zeros((l,npoints))
+xeq = np.zeros((mix.n_species,npoints*l))
+COe = np.zeros((l,npoints))
+CO2e= np.zeros((l,npoints))
+CO2p= np.zeros((l,npoints))
+UHCe= np.zeros((l,npoints))
+NOxe= np.zeros((l,npoints))
+for j in range(l):
+    for i in range(npoints):
+        # set the gas state
+        gas.set_equivalence_ratio(phi[i], fuel_species[j], 'O2:1.0, N2:3.76')
+
+        # create a mixture of 1 mole of gas, and 0 moles of solid carbon.
+        mix = ct.Mixture(mix_phases)
+        mix.T = T
+        mix.P = P
+
+        # equilibrate the mixture adiabatically at constant P
+        mix.equilibrate('HP', solver='gibbs', max_steps=1000)
+
+        tad[j, i] = mix.T
+        #print('At phi = {0:12.4g}, Tad = {1:12.4g}'.format(phi[i], tad[j, i]))
+        xeq[:,i*j] = mix.species_moles
+        COe[j,i]=gas['CO'].X
+        NOxe[j,i]=gas['NO'].X + gas['NO2'].X
+        CO2e[j,i]=gas['CO2'].X
+        if j > 8:
+            UHCe[j,i]=0.6*gas['CO'].X +0.3*gas['H2'].X +0.05*gas['CO2'].X +0.05*gas['CH4'].X
+        else:
+            UHCe[j,i]=gas[fuel_species[j]].X
+        
+
+#creates function to determine the LHV
+def heating_value(fuel):
+    """Returns the LHV and HHV for the specified fuel"""
+    gas.TP = 298, ct.one_atm
+    gas.set_equivalence_ratio(1.0, fuel, "O2:1.0")
+    h1 = gas.enthalpy_mass
+    Y_fuel = gas[fuel].Y[0]
+
+    # complete combustion products
+    X_products = {
+        "CO2": gas.elemental_mole_fraction("C"),
+        "H2O": 0.5 * gas.elemental_mole_fraction("H"),
+        "N2": 0.5 * gas.elemental_mole_fraction("N"),}
+    
+    gas.TPX = None, None, X_products
+    Y_H2O = gas["H2O"].Y[0]
+    h2 = gas.enthalpy_mass
+    LHV = -(h2 - h1) / Y_fuel / 1e6
+    return LHV
+
+
+LHV=np.zeros(l)
+i=0
+for fuel in fuel_species:
+    if i >8:
+        LHV[i] = 44.54
+    else :
+        LHV[i] = heating_value(fuel)
+        i=i+1
+for i in range(l):
+    CO2p[i,:]=CO2e[i,:]/LHV[i]
+CO2e = CO2e*1e6
+NOxe = NOxe*1e6
+COe = COe*1e6
+# write output CSV file for importing into Excel
+csv_file = 'adiabaticN.csv'
+with open(csv_file, 'w') as outfile:
+    writer = csv.writer(outfile)
+    for j in range(l):
+        writer.writerow([fuel_species[j], 'phi','T(K)', 'COe', 'UHCe', 'NOXe', 'CO2e', 'CO2p'])
+        writer.writerow([LHV[j]])
+        for i in range(npoints):
+            writer.writerow([None ,phi[i], tad[j, i], COe[j,i], UHCe[j,i],  NOxe[j,i], CO2e[j,i], CO2p[j,i] ])
+print('Output written to {0}'.format(csv_file))
+plt.figure(0)
+for i in range(l):
+    plt.plot(phi, tad[i, :], label=fuel_names[i])
+    plt.title('T adiabatic vs Phi')
+    plt.xlabel('Equivalence ratio')
+    plt.ylabel('Adiabatic flame temperature [K]')   
+plt.legend(loc= "best")
+plt.figure(1)
+for i in range(l):
+    plt.plot(phi, COe[i, :], label=fuel_names[i])
+    plt.axhline(y = 6)
+    plt.axhline(y = 50)
+    plt.axhline(y = 400)
+    plt.axhline(y = 13000)
+    plt.title('Equilibrium CO vs Phi')
+    plt.xlabel('Equivalence ratio')
+    plt.ylabel('PPM CO') 
+plt.legend(loc= "best")
+plt.figure(2)
+for i in range(l):
+    plt.plot(phi, UHCe[i, :], label=fuel_names[i])
+    plt.title('Equilibrium Unburnt Fuel vs Phi')
+    plt.xlabel('Equivalence ratio')
+    plt.ylabel('Equilibrium Unburnt Fuel Mole Fraction')
+    plt.axhline(y = 0.01)
+    plt.axvline(x = 1)
+    plt.axhline(y = 0.016414441)
+    plt.axhline(y = 0.04382123)
+plt.legend(loc= "best")
+plt.figure(3)
+for i in range(l):
+    plt.plot(phi, NOxe[i, :], label=fuel_names[i])
+    plt.title('Equilibrium NOx vs Phi')
+    plt.axhline(y = 25)
+    plt.axhline(y = 100)
+    plt.axhline(y = 320)
+    plt.xlabel('Equivalence ratio')
+    plt.ylabel('PPM NOx')  
+plt.legend(loc= "best")
+plt.figure(4)
+for i in range(l):
+    plt.plot(phi, CO2e[i, :], label=fuel_names[i])
+    plt.title('Equilibrium CO2 vs Phi')
+    plt.axhline(y = 400)
+    plt.axhline(y = 5000)
+    plt.axhline(y = 50000)
+    plt.xlabel('Equivalence ratio')
+    plt.ylabel('PPM CO2')   
+plt.legend(loc= "best")
+plt.figure(5)
+for i in range(l):
+    plt.plot(phi, CO2p[i, :], label=fuel_names[i])
+    plt.title('Equilibrium CO2/LHV vs Phi')
+    plt.xlabel('Equivalence ratio')
+    plt.ylabel('Equilibrium CO2 Mole Fraction/LHV')
+plt.legend(loc= "best")
+plt.figure(6)
+for i in range(l):
+    plt.plot(tad[i, :], NOxe[i, :], label=fuel_names[i])
+    plt.title('Equilibrium NOx vs Tad')
+    plt.xlabel('Tad K')
+    plt.ylabel('Equilibrium NOx PPM')
+    plt.axhline(y = 25)
+    plt.axhline(y = 100)
+    plt.axhline(y = 320)
+    plt.axvline(x=1300)
+    plt.axvline(x=1133)
+    plt.axvline(x=976)
+    plt.ylim(bottom=0, top=500)
+    plt.legend(loc= "best")
+plt.show()
